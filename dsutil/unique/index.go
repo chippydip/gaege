@@ -39,13 +39,12 @@ const (
 	valueEntity = "V"
 )
 
-func (idx Index) newKey(ctx appengine.Context, kind, id string) (key dsutil.CacheKey) {
+func (idx Index) newKey(ctx appengine.Context, kind, id string) (key *datastore.Key) {
 	if idx.flags&SingleEntityGroup != 0 {
-		key.Key = datastore.NewKey(ctx, idx.name, "", 1, nil)
+		key = datastore.NewKey(ctx, idx.name, "", 1, nil)
 	}
 	kind = idx.name + kind
-	key.Key = datastore.NewKey(ctx, kind, id, 0, key.Key)
-	return key
+	return datastore.NewKey(ctx, kind, id, 0, key)
 }
 
 func (idx Index) GetValue(ctx appengine.Context, id string) (value string, err error) {
@@ -128,18 +127,18 @@ func (idx Index) Set(ctx appengine.Context, id, value string) error {
 	})
 }
 
-func get(ctx appengine.Context, key dsutil.CacheKey) (prop string, err error) {
-	err = datastore.Get(ctx, key.Key, stringPLS{&prop})
+func get(ctx appengine.Context, key *datastore.Key) (prop string, err error) {
+	err = datastore.Get(ctx, key, stringPLS{&prop})
 	return prop, err
 }
 
-func put(ctx appengine.Context, key dsutil.CacheKey, prop string) (err error) {
-	_, err = datastore.Put(ctx, key.Key, stringPLS{&prop})
+func put(ctx appengine.Context, key *datastore.Key, prop string) (err error) {
+	_, err = datastore.Put(ctx, key, stringPLS{&prop})
 	return err
 }
 
-func del(ctx appengine.Context, key dsutil.CacheKey) {
-	datastore.Delete(ctx, key.Key)
+func del(ctx appengine.Context, key *datastore.Key) {
+	datastore.Delete(ctx, key)
 }
 
 // stringPLS implements datastore.PropertyLoadSaver for a single string
