@@ -32,6 +32,13 @@ func NewContext(r *http.Request, opts *Options) *Context {
 	}
 }
 
+func WrapContext(ctx appengine.Context, opts *Options) *Context {
+	return &Context{
+		Context: ctx,
+		options: opts,
+	}
+}
+
 func (ctx *Context) IsInTransaction() bool {
 	return ctx.tx != nil
 }
