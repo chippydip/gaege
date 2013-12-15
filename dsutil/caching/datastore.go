@@ -49,6 +49,9 @@ func (ctx *Context) datastoreCall(method string, in, out appengine_internal.Prot
 		keys := refsToKeys(in.(*pb.GetRequest).Key)
 		values := out.(*pb.GetResponse).Entity
 		for i, key := range keys {
+			if i >= len(values) {
+				break
+			}
 			ctx.tx[key] = values[i]
 		}
 
@@ -169,7 +172,7 @@ func (ctx *Context) datastoreDelete(refs []*pb.Reference) {
 
 	if !ctx.IsInTransaction() {
 		// clear the cached value
-		if e := memcache.DeleteMulti(ctx, keys); e != nil {
+		if e := ignoreMisses(memcache.DeleteMulti(ctx, keys)); e != nil {
 			ctx.Warningf("caching: memcache.DeleteMulti: %v", e)
 		}
 	} else {
@@ -181,7 +184,7 @@ func (ctx *Context) datastoreDelete(refs []*pb.Reference) {
 }
 
 func (ctx *Context) datastoreCommit() {
-	// Split the remembered updates into deletes and puts
+	// Split the remembered updates into puts/deletes and gets
 	deletes := make([]string, 0, len(ctx.tx))
 	items := make([]*memcache.Item, 0, len(ctx.tx))
 	for key, value := range ctx.tx {
@@ -194,14 +197,35 @@ func (ctx *Context) datastoreCommit() {
 	ctx.tx = nil
 
 	// Perform the deletes
-	if e := memcache.DeleteMulti(ctx, deletes); e != nil {
-		ctx.Warningf("caching: memcache.DeleteMulti: %v", e)
+	if len(deletes) > 0 {
+		if e := ignoreMisses(memcache.DeleteMulti(ctx, deletes)); e != nil {
+			ctx.Warningf("caching: memcache.DeleteMulti: %v", e)
+		}
 	}
 
 	// Perform the updates
-	if e := memcache.SetMulti(ctx, items); e != nil {
-		ctx.Warningf("caching: memcache.SetMulti: %v", e)
+	if len(items) > 0 {
+		if e := memcache.SetMulti(ctx, items); e != nil {
+			ctx.Warningf("caching: memcache.SetMulti: %v", e)
+		}
 	}
+}
+
+func ignoreMisses(err error) error {
+	if me, ok := err.(appengine.MultiError); ok {
+		any = false
+		for i, e := range me {
+			if e == memcache.ErrCacheMiss {
+				me[i] = nil
+			} else if e != nil {
+				any = true
+			}
+		}
+		if !any {
+			err = nil
+		}
+	}
+	return err
 }
 
 func refsToKeys(refs []*pb.Reference) []string {
