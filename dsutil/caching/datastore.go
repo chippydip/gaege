@@ -34,8 +34,23 @@ import (
 // },
 
 func (ctx *Context) datastoreCall(method string, in, out appengine_internal.ProtoMessage, opts *appengine_internal.CallOptions) error {
+	// Get the transaction object (if any)
+	var tx *pb.Transaction
+	switch t := in.(type) {
+	case *pb.Query:
+		tx = t.Transaction
+	case *pb.GetRequest:
+		tx = t.Transaction
+	case *pb.PutRequest:
+		tx = t.Transaction
+	case *pb.DeleteRequest:
+		tx = t.Transaction
+	case *pb.Transaction:
+		tx = t
+	}
+
 	// Get requires special handling to try and pull values from cache and request only what's not found
-	if method == "Get" && !ctx.IsInTransaction() {
+	if method == "Get" && tx == nil {
 		return ctx.datastoreGet(in.(*pb.GetRequest), out.(*pb.GetResponse), opts)
 	}
 
@@ -49,34 +64,30 @@ func (ctx *Context) datastoreCall(method string, in, out appengine_internal.Prot
 		// so remember the results to be added to the cache when the transaction commits
 		keys := refsToKeys(in.(*pb.GetRequest).Key)
 		values := out.(*pb.GetResponse).Entity
-		for i, key := range keys {
-			if i >= len(values) {
-				break
-			}
-			ctx.tx[key] = values[i]
-		}
+		ctx.updateTransactionMap(tx, keys, values)
 
 	case "Put":
 		// TODO: optionally store the put values to save the next lookup
-		ctx.datastoreDelete(out.(*pb.PutResponse).Key)
+		ctx.datastoreDelete(tx, out.(*pb.PutResponse).Key)
 
 	case "Delete":
-		ctx.datastoreDelete(in.(*pb.DeleteRequest).Key)
+		ctx.datastoreDelete(tx, in.(*pb.DeleteRequest).Key)
 
 	case "RunQuery", "Next":
 		// TODO: optionally cache results
 
 	case "BeginTransaction":
 		// Create a new transaction cache
-		ctx.tx = map[string]*pb.GetResponse_Entity{}
+		tx = out.(*pb.Transaction)
+		ctx.newTransactionMap(tx)
 
 	case "Commit":
 		// Perform delayed updates
-		ctx.datastoreCommit()
+		ctx.datastoreCommit(ctx.removeTransactionMap(tx))
 
 	case "Rollback":
 		// Discard remembered updates (should have been rolled back)
-		ctx.tx = nil
+		ctx.removeTransactionMap(tx)
 	}
 
 	return err
@@ -168,34 +179,31 @@ func reduce(keys []string, indexes []int, values []*pb.GetResponse_Entity) ([]st
 	return keys[:count], indexes[:count]
 }
 
-func (ctx *Context) datastoreDelete(refs []*pb.Reference) {
+func (ctx *Context) datastoreDelete(tx *pb.Transaction, refs []*pb.Reference) {
 	keys := refsToKeys(refs)
 
-	if !ctx.IsInTransaction() {
+	if tx == nil {
 		// clear the cached value
 		if e := ignoreMisses(memcache.DeleteMulti(ctx, keys)); e != nil {
 			ctx.Warningf("caching: memcache.DeleteMulti: %v", e)
 		}
 	} else {
 		// remember for update once tx commits
-		for _, key := range keys {
-			ctx.tx[key] = nil
-		}
+		ctx.updateTransactionMap(tx, keys, nil)
 	}
 }
 
-func (ctx *Context) datastoreCommit() {
+func (ctx *Context) datastoreCommit(m transactionMap) {
 	// Split the remembered updates into puts/deletes and gets
-	deletes := make([]string, 0, len(ctx.tx))
-	items := make([]*memcache.Item, 0, len(ctx.tx))
-	for key, value := range ctx.tx {
+	deletes := make([]string, 0, len(m))
+	items := make([]*memcache.Item, 0, len(m))
+	for key, value := range m {
 		if value == nil {
 			deletes = append(deletes, key)
 		} else {
 			ctx.appendItem(items, key, value)
 		}
 	}
-	ctx.tx = nil
 
 	// Perform the deletes
 	if len(deletes) > 0 {

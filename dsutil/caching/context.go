@@ -4,6 +4,7 @@ import (
 	"appengine"
 	"appengine_internal"
 	"net/http"
+	"sync"
 
 	pb "appengine_internal/datastore"
 )
@@ -16,13 +17,20 @@ func (opt *Options) cacheWrites() bool {
 	return false
 }
 
+type transactionMap map[string]*pb.GetResponse_Entity
+type transactionMaps map[*pb.Transaction]transactionMap
+
 // Context is a wrapper for aetest.Context so we can add methods.
 // TODO: add a mutex in case the Context is used in a multi-threaded way?
 // TODO: handle concurrent transactions in multiple go routines
 type Context struct {
 	appengine.Context
 	options *Options
-	tx      map[string]*pb.GetResponse_Entity
+
+	// Mutable state should be read or written while holding this lock, but
+	// it shouldn't be held through API calls.
+	mu sync.Mutex
+	tx transactionMaps
 	//cache   map[string]*pb.GetResponse_Entity
 }
 
@@ -30,6 +38,7 @@ func NewContext(r *http.Request, opts *Options) *Context {
 	return &Context{
 		Context: appengine.NewContext(r),
 		options: opts,
+		tx:      transactionMaps{},
 	}
 }
 
@@ -37,11 +46,8 @@ func WrapContext(ctx appengine.Context, opts *Options) *Context {
 	return &Context{
 		Context: ctx,
 		options: opts,
+		tx:      transactionMaps{},
 	}
-}
-
-func (ctx *Context) IsInTransaction() bool {
-	return ctx.tx != nil
 }
 
 const (
@@ -60,4 +66,64 @@ func (ctx *Context) Call(service, method string, in, out appengine_internal.Prot
 	default:
 		return ctx.Context.Call(service, method, in, out, opts)
 	}
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
+func (ctx *Context) newTransactionMap(tx *pb.Transaction) {
+	if tx == nil {
+		ctx.Criticalf("caching: can't create <nil> transaction")
+		return
+	}
+
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	if ctx.tx[tx] != nil {
+		ctx.Criticalf("caching: transaction already started (%v)", tx)
+		return
+	}
+
+	ctx.tx[tx] = transactionMap{}
+}
+
+func (ctx *Context) updateTransactionMap(tx *pb.Transaction, keys []string, values []*pb.GetResponse_Entity) {
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	m := ctx.tx[tx]
+
+	// We should be in a transaction
+	if m == nil {
+		ctx.Criticalf("caching: no transaction for %v", tx)
+		return
+	}
+
+	// Handle puts/deletes
+	if values == nil {
+		for _, key := range keys {
+			m[key] = nil
+		}
+		return
+	}
+
+	// Handle gets
+	for i, key := range keys {
+		if i >= len(values) {
+			ctx.Criticalf("caching: len(keys) != len(values) (%v, %v)", len(keys), len(values))
+			break
+		}
+		m[key] = values[i]
+	}
+}
+
+func (ctx *Context) removeTransactionMap(tx *pb.Transaction) transactionMap {
+	ctx.mu.Lock()
+	ctx.mu.Unlock()
+
+	m := ctx.tx[tx]
+
+	delete(ctx.tx, tx)
+
+	return m
 }

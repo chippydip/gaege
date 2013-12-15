@@ -31,6 +31,7 @@ func RunInTransaction(ctx appengine.Context, f func(appengine.Context) error) er
 // uses a simple type cast to detect and prevent nested transactions and
 // wrapping a transaction context will prevent this check from working.
 func IsInTransaction(ctx appengine.Context) bool {
+	// TODO: try using RegisterTransactionSetter with a dummy ctx.Call for this?
 	// We can't type assert a private type in another package, so fake it.
 	return reflect.TypeOf(ctx).String() == "*datastore.transaction"
 }
