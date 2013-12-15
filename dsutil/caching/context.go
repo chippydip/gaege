@@ -18,6 +18,7 @@ func (opt *Options) cacheWrites() bool {
 
 // Context is a wrapper for aetest.Context so we can add methods.
 // TODO: add a mutex in case the Context is used in a multi-threaded way?
+// TODO: handle concurrent transactions in multiple go routines
 type Context struct {
 	appengine.Context
 	options *Options
