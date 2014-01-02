@@ -35,8 +35,8 @@ func NewIndex(name string, flags Flag) Index {
 }
 
 const (
-	idEntity    = "I"
-	valueEntity = "V"
+	idEntity    = "I" // maps IDs to Values
+	valueEntity = "V" // maps Values to IDs
 )
 
 func (idx Index) newKey(ctx appengine.Context, kind, id string) (key *datastore.Key) {
@@ -73,16 +73,21 @@ func (idx Index) GetId(ctx appengine.Context, value string) (id string, err erro
 	return id, err
 }
 
-func (idx Index) Set(ctx appengine.Context, id, value string) error {
-	return dsutil.RunInTransaction(ctx, func(ctx appengine.Context) error {
-		valueKey := idx.newKey(ctx, idEntity, id)
-		idKey := idx.newKey(ctx, valueEntity, value)
+func (idx Index) DeleteId(ctx appengine.Context, id string) error {
+	panic("NYI")
+}
 
+// TODO: ID/Value query methods to get all
+
+func (idx Index) Set(ctx appengine.Context, id, value string) error {
+	valueKey := idx.newKey(ctx, idEntity, id)
+	idKey := idx.newKey(ctx, valueEntity, value)
+
+	return dsutil.RunInTransaction(ctx, func(ctx appengine.Context) error {
 		// Check for an existing key for this value
-		currId, err := get(ctx, idKey)
-		if err != datastore.ErrNoSuchEntity {
+		if currId, err := get(ctx, idKey); err != datastore.ErrNoSuchEntity {
 			if err != nil {
-				return err
+				return err // unexpected datastore problem
 			}
 			// value exist
 
@@ -98,11 +103,12 @@ func (idx Index) Set(ctx appengine.Context, id, value string) error {
 
 			// Check if value is canonical for currId
 			canonical, err := idx.GetValue(ctx, currId)
-			if err != nil {
-				return err
-			}
-			if value == canonical {
-				return ErrDuplicateIndexValue
+			if err == nil {
+				if value == canonical {
+					return ErrDuplicateIndexValue
+				}
+			} else if err != datastore.ErrNoSuchEntity {
+				return err // unexpected datastore problem
 			}
 			// value is non canonical and can be reused
 		}
@@ -119,8 +125,7 @@ func (idx Index) Set(ctx appengine.Context, id, value string) error {
 		}
 
 		// Update the value index and then the id index
-		err = put(ctx, idKey, id)
-		if err != nil {
+		if err := put(ctx, idKey, id); err != nil {
 			return err
 		}
 		return put(ctx, valueKey, value)
